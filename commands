@@ -88,8 +88,6 @@ case "$cmd" in
       docker rm $_cid  > /dev/null
     fi
 
-    #dokku link:delete "$app" "$container_name" "$link_name"
-    #dokku config:unset "$app" MEMCACHE_SERVERS
     if [[ -z "$app" ]] || [[ -z "$service_name" ]]; then
       echo -e "critical error: \$app or \$service_name is empty!"
       exit 1
