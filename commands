@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e;
+#set -e
 
 ETCD_URL="http://127.0.0.1:4001"
 
@@ -17,22 +17,31 @@ link_name="$service_name"
 container_name="${service_name}-${app}"
 base_container_name="timchen/${service_name}"
 
-function set_service_key() {
+# TODO swap return values
+function does_service_for_app_exist() {
+  _check_key=$(curl -L ${ETCD_URL}/v2/keys/apps/$app/$service_name 2> /dev/null)
+  if [[ "$_check_key" =~ "Key not found" ]]; then
+    return 0
+  fi
+  return 1
+}
+
+function set_service_key_for_app() {
   _key="$1"
   _value="$2"
+
   # TODO check json for return value
   curl -L ${ETCD_URL}/v2/keys/apps/${app}/${service_name}/${_key}?prevExist=false -X PUT -d value="$_value" 2> /dev/null
 }
 
-
-if [[ "$1" == memcached:* ]] && [[ -z "$app" ]]; then
-  echo "No app specified"
+if [[ "$cmd" == $service_name:* ]] && [[ -z "$app" ]]; then
+  echo "no app specified"
   exit 1
 fi
 
 app_id=$(curl -L ${ETCD_URL}/v2/keys/apps/$app/id  2> /dev/null | sed 's/^.*"value":"\([^"]*\)".*$/\1/')
 if [[ ! "$app_id" =~ $numbers_regex ]]; then
-  echo "Unable to retrieve app id for $app"
+  echo "unable to retrieve app id for $app"
   exit 1
 fi
 
@@ -40,78 +49,67 @@ exposed_service_port=$((exposed_base_port+app_id))
 
 case "$cmd" in
   memcached:create)
-    image=$(docker images | grep "$base_container_name" | awk ' {print $ 3}')
-    if [[ -z "$image" ]]; then
-      echo "Unable to find docker image: $base_container_name" 
+    does_service_for_app_exist
+    ret=$?
+    if [[ "$ret" -eq 1 ]]; then
+      echo "${service_name} is already configured for ${app}!"
+      curl -L ${ETCD_URL}/v2/keys/apps/$app/$service_name 2> /dev/null
+      echo
+      exit 1
+    fi
+
+    _image=$(docker images | grep "$base_container_name" | awk ' { print $3 }')
+    if [[ -z "$_image" ]]; then
+      echo "unable to find base image: $base_container_name" 
       exit 1
     fi
 
     # stop running container if exists
-    id=$(docker ps | grep "$container_name" |  awk '{ print $ 1}')
-    if [[ ! -z "$id" ]]; then
-        docker stop $id > /dev/null
+    _cid=$(docker ps | grep "$container_name" |  awk '{ print $1 }')
+    if [[ ! -z "$_cid" ]]; then
+      docker stop $_cid > /dev/null
     fi
 
     docker run -name="$container_name" -p "${bind_addr}:${exposed_service_port}:${service_port}" \
       -d "$base_container_name" \
         /usr/bin/memcached -u memcache -p 11211 -m 64 -l 0.0.0.0
 
-    set_service_key "MEMCACHE_SERVERS" "${bind_addr}:${exposed_service_port}"
-    # Link to a potential existing app
-    #dokku memcached:link $app $app
-    echo
-    echo "-----> Memcached container created: $container_name"
-    sleep 1
+    set_service_key_for_app "MEMCACHE_SERVERS" "${bind_addr}:${exposed_service_port}"
+
+    echo "created ${service_name} container for ${app}!"
+    #sleep 1
     #dokku memcached:info $app
     ;;
 
   memcached:delete)
-    # Stop the container
-    id=$(docker ps -a | grep "$container_name" |  awk '{print $1}')
-    if [[ ! -z $id ]]; then
-        docker stop $id > /dev/null
-        docker rm $id  > /dev/null
+    _cid=$(docker ps -a | grep "$container_name" | awk '{ print $1 }')
+    if [[ ! -z "$_cid" ]]; then
+      docker stop $_cid > /dev/null
+      docker rm $_cid  > /dev/null
     fi
 
-    # unlink this container as "redis"
-    dokku link:delete "$app" "$container_name" "$link_name"
-    dokku config:unset "$app" MEMCACHE_SERVERS
-    echo
-    echo "-----> Memcached container deleted: $container_name"
+    #dokku link:delete "$app" "$container_name" "$link_name"
+    #dokku config:unset "$app" MEMCACHE_SERVERS
+    if [[ -z "$app" ]] || [[ -z "$service_name" ]]; then
+      echo -e "critical error: \$app or \$service_name is empty!"
+      exit 1
+    fi
+    # TODO don't actually delete...should mark disabled or something
+    curl -L ${ETCD_URL}/v2/keys/apps/${app}/${service_name}?recursive=true -X DELETE &> /dev/null 
+
+    echo "deleted ${service_name} container for ${app}!"
     ;;
 
   memcached:info)
-    id=$(docker ps -a | grep "$container_name" | awk '{print $1}')
-    IP=$(docker inspect $id | grep IPAddress | cut -d '"' -f 4)
+    _cid=$(docker ps -a | grep "$container_name" | awk '{print $1}')
+    _ip=$(docker inspect $_cid | grep IPAddress | cut -d '"' -f 4)
+    echo "  >> host: ${_ip}:${service_port}"
     echo
-    echo "       Host: ${IP}"
-    echo "       Private port: 11211"
-    echo
-    ;;
-
-  memcached:link)
-    if $app_EXISTS; then
-        # Check argument
-        if [[ -z $3 ]]; then
-            echo "You must specify a container name"
-            exit 1
-        fi
-        container_name="memcached_$3"
-
-        # link this container as "redis"
-        dokku link:create "$app" "$container_name" "$link_name"
-
-        # figure out IP to set env var
-        id=$(docker ps -a | grep "$container_name" |  awk '{print $1}')
-        IP=$(docker inspect $id | grep IPAddress | cut -d '"' -f 4)
-        dokku config:set "$app" MEMCACHE_SERVERS="${IP}:11211"
-        echo "-----> $app linked to $container_name container"
-    fi
     ;;
 
   memcached:logs)
-    id=$(docker ps -a | grep "$container_name" |  awk '{print $1}')
-    docker logs $id | tail -n 100
+    _cid=$(docker ps -a | grep "$container_name" |  awk '{ print $1 }')
+    docker logs $_cid | tail -n 100
     ;;
 
   help)
@@ -119,7 +117,6 @@ case "$cmd" in
     memcached:create <app>                          Create a Memcached container
     memcached:delete <app>                          Delete specified Memcached container
     memcached:info <app>                            Display container informations
-    memcached:link <app> <container>                Link an app to a Memcached container
     memcached:logs <app>                            Display last logs from Memcached container
 EOF
     ;;
