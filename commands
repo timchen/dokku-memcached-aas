@@ -34,15 +34,17 @@ function set_service_key_for_app() {
   curl -L ${ETCD_URL}/v2/keys/apps/${app}/${service_name}/${_key}?prevExist=false -X PUT -d value="$_value" 2> /dev/null
 }
 
-if [[ "$cmd" == $service_name:* ]] && [[ -z "$app" ]]; then
-  echo "no app specified"
-  exit 1
-fi
+if [[ "$cmd" == "$service_name" ]] || [[ "$cmd" =~ $service_name:* ]]; then
+  if [[ -z "$app" ]]; then
+    echo "no app specified"
+    exit 64
+  fi
 
-app_id=$(curl -L ${ETCD_URL}/v2/keys/apps/$app/id  2> /dev/null | sed 's/^.*"value":"\([^"]*\)".*$/\1/')
-if [[ ! "$app_id" =~ $numbers_regex ]]; then
-  echo "unable to retrieve app id for $app"
-  exit 1
+  app_id=$(curl -L ${ETCD_URL}/v2/keys/apps/$app/id  2> /dev/null | sed 's/^.*"value":"\([^"]*\)".*$/\1/')
+  if [[ ! "$app_id" =~ $numbers_regex ]]; then
+    echo "unable to retrieve app id for $app"
+    exit 65
+  fi
 fi
 
 exposed_service_port=$((exposed_base_port+app_id))
@@ -55,13 +57,13 @@ case "$cmd" in
       echo "${service_name} is already configured for ${app}!"
       curl -L ${ETCD_URL}/v2/keys/apps/$app/$service_name 2> /dev/null
       echo
-      exit 1
+      exit 66
     fi
 
     _image=$(docker images | grep "$base_container_name" | awk ' { print $3 }')
     if [[ -z "$_image" ]]; then
       echo "unable to find base image: $base_container_name" 
-      exit 1
+      exit 67
     fi
 
     # stop running container if exists
@@ -90,7 +92,7 @@ case "$cmd" in
 
     if [[ -z "$app" ]] || [[ -z "$service_name" ]]; then
       echo -e "critical error: \$app or \$service_name is empty!"
-      exit 1
+      exit 99
     fi
     # TODO don't actually delete...should mark disabled or something
     curl -L ${ETCD_URL}/v2/keys/apps/${app}/${service_name}?recursive=true -X DELETE &> /dev/null 
@@ -120,3 +122,4 @@ EOF
     ;;
 
 esac
+
